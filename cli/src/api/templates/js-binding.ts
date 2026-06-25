@@ -3,9 +3,10 @@ export function createCjsBinding(
   pkgName: string,
   idents: string[],
   packageVersion?: string,
+  compress = false,
 ): string {
   return `${bindingHeader}
-${createCommonBinding(localName, pkgName, packageVersion)}
+${createCommonBinding(localName, pkgName, packageVersion, compress)}
 module.exports = nativeBinding
 ${idents
   .map((ident) => `module.exports.${ident} = nativeBinding.${ident}`)
@@ -18,17 +19,74 @@ export function createEsmBinding(
   pkgName: string,
   idents: string[],
   packageVersion?: string,
+  compress = false,
 ): string {
   return `${bindingHeader}
 import { createRequire } from 'module'
 const require = createRequire(import.meta.url)
 const __dirname = new URL('.', import.meta.url).pathname
 
-${createCommonBinding(localName, pkgName, packageVersion)}
+${createCommonBinding(localName, pkgName, packageVersion, compress)}
 const { ${idents.join(', ')} } = nativeBinding
 ${idents.map((ident) => `export { ${ident} }`).join('\n')}
 `
 }
+
+// Inlined zero-dependency loader for Brotli-compressed addons (`--compress`).
+// Decompresses `<base>.node.br` (brotli) or `<base>.node.zst` (zstd) to a
+// content-addressed cache on first load, picking the codec from the manifest,
+// verifies sha256 before dlopen, then requires the real .node. A raw `<base>.node`
+// next to the blob wins (dev / opt-out). Uses only built-ins available on the
+// CLI's supported Node range (Brotli sync since 11.7); unprefixed requires keep
+// the generated file parseable on the same range as the rest of this template.
+// Exported for unit tests; embedded verbatim into the generated binding when
+// `--compress` is set.
+export const loadCompressedHelper = `function __napiLoadCompressed(dir, base) {
+  const fs = require('fs')
+  const path = require('path')
+  const rawPath = path.join(dir, base + '.node')
+  if (fs.existsSync(rawPath)) return require(rawPath)
+  const manifestPath = path.join(dir, base + '.node.json')
+  let manifest
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  } catch (e) {
+    throw new Error('napi-rs: cannot read the compression manifest for ' + base + ' at ' + manifestPath + ' (' + e.message + '). The compressed addon is missing files or corrupt; reinstall the package.')
+  }
+  const expected = manifest && manifest.sha256
+  if (!expected) {
+    throw new Error('napi-rs: compression manifest ' + manifestPath + ' has no sha256 field (saw ' + JSON.stringify(manifest) + '). Rebuild the addon with a current @napi-rs/cli.')
+  }
+  const isZstd = manifest.algo === 'zstd'
+  const os = require('os')
+  const cacheRoot = process.env.NAPI_RS_NATIVE_CACHE || process.env.XDG_CACHE_HOME || path.join(os.homedir() || os.tmpdir(), '.cache')
+  const cacheDir = path.join(cacheRoot, 'napi-rs-native')
+  const cacheFile = path.join(cacheDir, base + '-' + expected.slice(0, 16) + '.node')
+  if (!fs.existsSync(cacheFile)) {
+    const zlib = require('zlib')
+    if (isZstd && typeof zlib.zstdDecompressSync !== 'function') {
+      throw new Error('napi-rs: ' + base + ' is zstd-compressed and needs zstd in node:zlib (Node >= 22.15). Every maintained Node release (22 LTS, 24 LTS) includes it; this runtime is older/EOL. Upgrade Node (https://nodejs.org/en/about/previous-releases) or rebuild with the brotli codec.')
+    }
+    const blobPath = path.join(dir, base + (isZstd ? '.node.zst' : '.node.br'))
+    let blob
+    try {
+      blob = fs.readFileSync(blobPath)
+    } catch (e) {
+      throw new Error('napi-rs: cannot read the compressed binary for ' + base + ' at ' + blobPath + ' (' + e.message + '). The compressed addon is missing files or corrupt; reinstall the package.')
+    }
+    const out = isZstd ? zlib.zstdDecompressSync(blob) : zlib.brotliDecompressSync(blob)
+    const actual = require('crypto').createHash('sha256').update(out).digest('hex')
+    if (actual !== expected) {
+      throw new Error('napi-rs: integrity check failed for ' + base + ' at ' + blobPath + ' (saw sha256 ' + actual + ', wanted ' + expected + '). The binary is corrupt or tampered; reinstall the package.')
+    }
+    fs.mkdirSync(cacheDir, { recursive: true })
+    const tmp = cacheFile + '.' + process.pid + '.tmp'
+    fs.writeFileSync(tmp, out, { mode: 0o644 })
+    fs.renameSync(tmp, cacheFile)
+  }
+  return require(cacheFile)
+}
+`
 
 const bindingHeader = `// prettier-ignore
 /* eslint-disable */
@@ -40,37 +98,46 @@ function createCommonBinding(
   localName: string,
   pkgName: string,
   packageVersion?: string,
+  compress = false,
 ): string {
   function requireTuple(tuple: string, identSize = 8) {
     const identLow = ' '.repeat(identSize - 2)
     const ident = ' '.repeat(identSize)
+    // With `--compress`, the local .node and the platform package both ship a
+    // `<base>.node.{br,zst}` + manifest instead of a raw .node; route both through the
+    // self-extracting loader. Without it, emit the historical bare requires.
+    const localLoad = compress
+      ? `return __napiLoadCompressed(__dirname, '${localName}.${tuple}')`
+      : `return require('./${localName}.${tuple}.node')`
+    const pkgLoad = compress
+      ? `return __napiLoadCompressed(require('path').dirname(require.resolve('${pkgName}-${tuple}/package.json')), '${localName}.${tuple}')`
+      : `return require('${pkgName}-${tuple}')`
     const versionCheck = packageVersion
       ? `
 ${identLow}try {
-${ident}const binding = require('${pkgName}-${tuple}')
 ${ident}const bindingPackageVersion = require('${pkgName}-${tuple}/package.json').version
 ${ident}if (bindingPackageVersion !== '${packageVersion}' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
 ${ident}  throw new Error(\`Native binding package version mismatch, expected ${packageVersion} but got \${bindingPackageVersion}. You can reinstall dependencies to fix this issue.\`)
 ${ident}}
-${ident}return binding
+${ident}${pkgLoad}
 ${identLow}} catch (e) {
 ${ident}loadErrors.push(e)
 ${identLow}}`
       : `
 ${identLow}try {
-${ident}return require('${pkgName}-${tuple}')
+${ident}${pkgLoad}
 ${identLow}} catch (e) {
 ${ident}loadErrors.push(e)
 ${identLow}}`
     return `try {
-${ident}return require('./${localName}.${tuple}.node')
+${ident}${localLoad}
 ${identLow}} catch (e) {
 ${ident}loadErrors.push(e)
 ${identLow}}${versionCheck}`
   }
 
   return `const { readFileSync } = require('fs')
-let nativeBinding = null
+${compress ? loadCompressedHelper : ''}let nativeBinding = null
 const loadErrors = []
 
 const isMusl = () => {

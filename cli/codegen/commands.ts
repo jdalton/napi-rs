@@ -235,6 +235,18 @@ const BUILD_OPTIONS: CommandSchema = {
       short: ['s'],
     },
     {
+      name: 'compress',
+      type: 'boolean',
+      description:
+        'Ship the addon compressed (`.node.{zst,br}` + sha256 manifest) and emit a self-extracting loader. Decompresses to a content-addressed cache on first load; steady-state speed is unchanged.',
+    },
+    {
+      name: 'compress-level',
+      type: 'string',
+      description:
+        'Compression level for --compress (zstd 1-22, brotli 0-11). Defaults to the sub-1s-compress sweet spot; turn it up for the smallest blob.',
+    },
+    {
       name: 'release',
       type: 'boolean',
       description: 'Build in release mode',

@@ -130,6 +130,14 @@ const cjsBindingCases: Array<{ name: string; code: string }> = [
     name: 'with version check',
     code: createCjsBinding('test', '@scope/test', ['sum', 'sub'], '1.0.0'),
   },
+  {
+    name: 'compressed',
+    code: createCjsBinding('test', '@scope/test', ['sum', 'sub'], undefined, true),
+  },
+  {
+    name: 'compressed with version check',
+    code: createCjsBinding('test', '@scope/test', ['sum', 'sub'], '1.0.0', true),
+  },
 ]
 
 // Matches a `node:` builtin scheme in either a `require('node:fs')` or an
@@ -161,4 +169,36 @@ test('createEsmBinding is Node 12 compatible', (t) => {
   )
   t.false(code.includes('?.'), 'ESM loader must not use optional chaining')
   t.false(code.includes('??'), 'ESM loader must not use nullish coalescing')
+})
+
+test('createEsmBinding compressed is Node 12 compatible', (t) => {
+  const code = createEsmBinding('test', '@scope/test', ['sum'], undefined, true)
+  assertValidJS(t, code, 'esm compressed')
+  t.true(
+    code.includes('__napiLoadCompressed'),
+    'compressed ESM loader must inline the self-extracting helper',
+  )
+  t.false(NODE_SCHEME_RE.test(code), 'compressed ESM loader must not use the node: scheme')
+  t.false(code.includes('?.'), 'compressed ESM loader must not use optional chaining')
+  t.false(code.includes('??'), 'compressed ESM loader must not use nullish coalescing')
+})
+
+test('compress flag toggles the self-extracting loader', (t) => {
+  const plain = createCjsBinding('test', '@scope/test', ['sum'])
+  const compressed = createCjsBinding('test', '@scope/test', ['sum'], undefined, true)
+
+  // Off by default: no helper, plain `.node` require, no decompression cost.
+  t.false(plain.includes('__napiLoadCompressed'))
+  t.true(plain.includes(`require('./test.darwin-arm64.node')`))
+
+  // On: helper inlined, both local + platform-package paths route through it,
+  // and the integrity gate (sha256 verify before dlopen) is present.
+  t.true(compressed.includes('function __napiLoadCompressed('))
+  t.true(compressed.includes(`__napiLoadCompressed(__dirname, 'test.darwin-arm64')`))
+  t.true(compressed.includes('brotliDecompressSync'))
+  t.true(compressed.includes('integrity check failed'))
+  t.false(
+    compressed.includes(`require('./test.darwin-arm64.node')`),
+    'compressed loader must not emit a bare .node require',
+  )
 })

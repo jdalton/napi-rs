@@ -98,6 +98,16 @@ export abstract class BaseBuildCommand extends Command {
     description: 'Whether strip the library to achieve the minimum file size',
   })
 
+  compress?: boolean = Option.Boolean('--compress', {
+    description:
+      'Ship the addon compressed (`.node.{zst,br}` + sha256 manifest) and emit a self-extracting loader. Decompresses to a content-addressed cache on first load; steady-state speed is unchanged.',
+  })
+
+  compressLevel?: string = Option.String('--compress-level', {
+    description:
+      'Compression level for --compress (zstd 1-22, brotli 0-11). Defaults to the sub-1s-compress sweet spot; turn it up for the smallest blob.',
+  })
+
   release?: boolean = Option.Boolean('--release,-r', {
     description: 'Build in release mode',
   })
@@ -171,6 +181,8 @@ export abstract class BaseBuildCommand extends Command {
       dtsCache: this.dtsCache,
       esm: this.esm,
       strip: this.strip,
+      compress: this.compress,
+      compressLevel: this.compressLevel,
       release: this.release,
       verbose: this.verbose,
       bin: this.bin,
@@ -269,6 +281,14 @@ export interface BuildOptions {
    * Whether strip the library to achieve the minimum file size
    */
   strip?: boolean
+  /**
+   * Ship the addon compressed (`.node.{zst,br}` + sha256 manifest) and emit a self-extracting loader. Decompresses to a content-addressed cache on first load; steady-state speed is unchanged.
+   */
+  compress?: boolean
+  /**
+   * Compression level for --compress (zstd 1-22, brotli 0-11). Defaults to the sub-1s-compress sweet spot; turn it up for the smallest blob.
+   */
+  compressLevel?: string
   /**
    * Build in release mode
    */

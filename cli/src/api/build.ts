@@ -807,9 +807,29 @@ class Builder {
       } else {
         await copyFileAsync(src, dest)
       }
+      let artifactPath = dest
+      if (this.options.compress && dest.endsWith('.node')) {
+        const { compressNodeArtifact } = await import('./compress.js')
+        const level =
+          this.options.compressLevel === undefined
+            ? undefined
+            : Number(this.options.compressLevel)
+        const { blobPath, rawSize, compSize, algo } = await compressNodeArtifact(
+          dest,
+          { level },
+        )
+        artifactPath = blobPath
+        debug(
+          'Compressed artifact (%s) to: [%i] (%i -> %i bytes)',
+          algo,
+          blobPath,
+          rawSize,
+          compSize,
+        )
+      }
       this.outputs.push({
         kind: dest.endsWith('.node') ? 'node' : isWasm ? 'wasm' : 'exe',
-        path: dest,
+        path: artifactPath,
       })
       return wasmBinaryName ? join(this.outputDir, wasmBinaryName) : null
     } catch (e) {
@@ -909,6 +929,7 @@ class Builder {
       packageName: this.options.jsPackageName ?? this.config.packageName,
       version: process.env.npm_new_version ?? this.config.packageJson.version,
       outputDir: this.outputDir,
+      compress: this.options.compress,
     })
   }
 
@@ -1008,6 +1029,7 @@ export interface WriteJsBindingOptions {
   packageName: string
   version: string
   outputDir: string
+  compress?: boolean
 }
 
 export async function writeJsBinding(
@@ -1031,6 +1053,7 @@ export async function writeJsBinding(
     options.idents,
     // in npm preversion hook
     options.version,
+    options.compress,
   )
 
   try {
