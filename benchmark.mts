@@ -55,7 +55,19 @@ const addonPath = resolveAddon()
 const raw = readFileSync(addonPath)
 out.push(`node ${process.version} · ${process.platform}-${process.arch}`)
 out.push(`addon: ${addonPath}`)
-out.push(`raw size: ${MB(raw.length)}\n`)
+out.push(`raw size: ${MB(raw.length)}`)
+
+// Raw .node load (dlopen). This is the baseline both raw and cached loads pay.
+// It's OS-page-cache-dominated: ~1 ms warm, up to ~13 ms on a cold first read,
+// ~0 ms to re-require in-process. (The file is already warm here from the read
+// above, so this reports the warm case.)
+try {
+  const t = process.hrtime.bigint()
+  require(addonPath)
+  out.push(`raw require (warm, OS-cache-dependent): ${(Number(process.hrtime.bigint() - t) / 1e6).toFixed(2)} ms\n`)
+} catch {
+  out.push('')
+}
 
 const codecs = [
   {
