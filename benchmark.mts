@@ -118,26 +118,45 @@ const codecs = [
         },
       }),
     decompress: brotliDecompressSync,
+    // brotli has no frame checksum, so the loader verifies the decompressed
+    // output against the original's sha256.
+    selfValidates: false,
   },
   {
     name: 'zstd 16',
     compress: () =>
       zstdCompressSync(raw, {
-        params: { [constants.ZSTD_c_compressionLevel]: 16 },
+        params: {
+          [constants.ZSTD_c_compressionLevel]: 16,
+          // Frame content checksum (XXH64, 0 added bytes): zstd validates the
+          // decode for free, matching what `napi build --compress` ships.
+          [constants.ZSTD_c_checksumFlag]: 1,
+        },
       }),
     decompress: zstdDecompressSync,
+    // zstd's frame checksum covers the decode, so the loader need only hash the
+    // small blob.
+    selfValidates: true,
   },
 ]
 
-for (const { name, compress, decompress } of codecs) {
+for (const { name, compress, decompress, selfValidates } of codecs) {
   const blob = compress()
   const decompressMs = bestMs(() => decompress(blob))
-  // The one-time first-load work the loader adds over a raw require: decompress,
-  // sha256-verify, write the cache file. (The dlopen both paths pay is excluded;
-  // a bare require()'s wall time is dominated by OS file-cache state, ~1-12 ms.)
+  // The one-time first-load work the loader adds over a raw require: verify
+  // integrity, decompress, write the cache file. zstd hashes only the small
+  // shipped blob (~3x less data; a tampered blob fails before the decompress)
+  // and lets its frame checksum validate the decode; brotli, lacking a frame
+  // checksum, hashes the decompressed output. (The dlopen both paths pay is
+  // excluded; a bare require()'s wall time is OS-file-cache-dominated, ~1-12 ms.)
   const oneTimeMs = bestMs(() => {
+    if (selfValidates) {
+      createHash('sha256').update(blob).digest('hex')
+    }
     const decompressed = decompress(blob)
-    createHash('sha256').update(decompressed).digest('hex')
+    if (!selfValidates) {
+      createHash('sha256').update(decompressed).digest('hex')
+    }
     const tmp = join(tmpdir(), `bench-${process.pid}-${name.replace(/\W/g, '')}.node`)
     writeFileSync(tmp, decompressed)
     unlinkSync(tmp)
@@ -153,9 +172,11 @@ for (const { name, compress, decompress } of codecs) {
 // read & parse the small manifest. The dlopen itself is identical to a raw
 // load, so this (not zero, but tiny) is the steady-state cost of --compress.
 {
+  const rawSha = createHash('sha256').update(raw).digest('hex')
   const manifest = JSON.stringify({
     algo: 'zstd',
-    sha256: createHash('sha256').update(raw).digest('hex'),
+    blobSha256: rawSha,
+    rawSha256: rawSha,
     rawSize: raw.length,
   })
   const manifestPath = join(tmpdir(), `bench-${process.pid}.node.json`)
