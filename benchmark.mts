@@ -18,7 +18,7 @@ import {
   zstdDecompressSync,
 } from 'node:zlib'
 import { createHash } from 'node:crypto'
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -96,6 +96,28 @@ for (const { name, compress, decompress } of codecs) {
     `${name.padEnd(10)} ${MB(blob.length)}  ${(raw.length / blob.length).toFixed(2)}x  ` +
       `decompress ${decompressMs.toFixed(1)}ms  ` +
       `one-time(decompress+verify+write) ${oneTimeMs.toFixed(0)}ms`,
+  )
+}
+
+// Per-cache-hit overhead the loader adds over a bare require: existsSync +
+// read & parse the small manifest. The dlopen itself is identical to a raw
+// load, so this (not zero, but tiny) is the steady-state cost of --compress.
+{
+  const manifest = JSON.stringify({
+    algo: 'zstd',
+    sha256: createHash('sha256').update(raw).digest('hex'),
+    rawSize: raw.length,
+  })
+  const manifestPath = join(tmpdir(), `bench-${process.pid}.node.json`)
+  writeFileSync(manifestPath, manifest)
+  const overheadMs = bestMs(() => {
+    existsSync(manifestPath)
+    JSON.parse(readFileSync(manifestPath, 'utf8'))
+    existsSync(manifestPath)
+  }, 200)
+  unlinkSync(manifestPath)
+  out.push(
+    `\ncache-hit overhead (existsSync + read+parse manifest, vs a raw require): ${overheadMs.toFixed(3)} ms`,
   )
 }
 
