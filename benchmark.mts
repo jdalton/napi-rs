@@ -18,7 +18,15 @@ import {
   zstdDecompressSync,
 } from 'node:zlib'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -38,6 +46,23 @@ function bestMs(fn: () => void, runs = 10): number {
   return best
 }
 
+function dirSize(dir: string): number {
+  let total = 0
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      total += dirSize(p)
+    } else {
+      try {
+        total += statSync(p).size
+      } catch {
+        // file vanished between readdir and stat; ignore
+      }
+    }
+  }
+  return total
+}
+
 function resolveAddon(): string {
   if (process.argv[2]) return process.argv[2]
   const tuple = `${process.platform}-${process.arch}`
@@ -55,6 +80,19 @@ const addonPath = resolveAddon()
 const raw = readFileSync(addonPath)
 out.push(`node ${process.version} · ${process.platform}-${process.arch}`)
 out.push(`addon: ${addonPath}`)
+
+// Node's compile cache (vite enables it via module.enableCompileCache(), no
+// dir + no CI gate, so it lands here). Report its size and clear it so each
+// benchmark run starts from a cold, comparable state.
+const compileCacheDir =
+  process.env.NODE_COMPILE_CACHE || join(tmpdir(), 'node-compile-cache')
+if (existsSync(compileCacheDir)) {
+  out.push(`node compile cache: ${MB(dirSize(compileCacheDir))} at ${compileCacheDir} (clearing)`)
+  rmSync(compileCacheDir, { recursive: true, force: true })
+} else {
+  out.push(`node compile cache: empty at ${compileCacheDir}`)
+}
+
 out.push(`raw size: ${MB(raw.length)}`)
 
 // Raw .node load (dlopen). This is the baseline both raw and cached loads pay.
