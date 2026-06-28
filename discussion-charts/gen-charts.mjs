@@ -1,0 +1,341 @@
+// Regenerate the napi --compress discussion charts (#3350) from current numbers.
+// The prior SVG sources were lost; this is the reproducible replacement.
+// Source data: napi-rs/.claude/reports/stub-load-benchmark.md (current model).
+//   node gen-charts.mjs   # writes compress-v16.svg + tradeoff-v16.svg here
+import { writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
+
+// GitHub-dark palette. green = win, gray = raw/neutral, orange = cost (never green
+// for a cost). muted = labels, ink = headline text.
+const C = {
+  bg: '#0d1117',
+  border: '#30363d',
+  ink: '#e6edf3',
+  muted: '#8b949e',
+  faint: '#6e7681',
+  grid: '#21262d',
+  raw: '#484f58',
+  green: '#3fb950',
+  orange: '#d29922',
+}
+const MONO = "ui-monospace, 'SF Mono', Menlo, 'DejaVu Sans Mono', monospace"
+const SANS = "-apple-system, 'Helvetica Neue', Arial, 'DejaVu Sans', sans-serif"
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+function text(x, y, s, o = {}) {
+  const {
+    size = 12,
+    fill = C.muted,
+    weight = 'normal',
+    font = SANS,
+    anchor = 'start',
+  } = o
+  return `<text x="${x}" y="${y}" font-family="${font}" font-size="${size}" font-weight="${weight}" fill="${fill}" text-anchor="${anchor}">${esc(s)}</text>`
+}
+
+function rect(x, y, w, h, fill, rx = 3, op = 1) {
+  return `<rect x="${x}" y="${y}" width="${Math.max(0, w)}" height="${h}" rx="${rx}" fill="${fill}" fill-opacity="${op}"/>`
+}
+
+function rule(x1, x2, y) {
+  return `<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="${C.grid}"/>`
+}
+
+function chip(x, y, fill, label) {
+  return rect(x, y - 10, 11, 11, fill, 2) + text(x + 17, y, label, { size: 11 })
+}
+
+function frame(w, h, inner) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">
+<rect x="0.5" y="0.5" width="${w - 1}" height="${h - 1}" rx="14" fill="${C.bg}" stroke="${C.border}"/>
+${inner}
+</svg>`
+}
+
+// ---- headline: compress-v16 (now also covers first load) --------------------
+function headline() {
+  const W = 640
+  const H = 560
+  const PAD = 30
+  const out = []
+  out.push(
+    text(PAD, 50, 'napi build --compress', {
+      size: 27,
+      fill: C.green,
+      weight: 'bold',
+      font: MONO,
+    }),
+  )
+  out.push(
+    text(PAD, 73, 'ship native addons smaller, at the same runtime speed', {
+      size: 13,
+      fill: C.muted,
+    }),
+  )
+  out.push(
+    text(PAD, 91, 'vite 8.1.0  ·  darwin-arm64  ·  zstd-16', {
+      size: 11.5,
+      fill: C.faint,
+    }),
+  )
+
+  const stats = [
+    { x: PAD, big: '−68%', sub: 'native size on disk' },
+    { x: 250, big: '3.4×', sub: 'smaller, up to (per addon)' },
+    { x: 470, big: 'same', sub: 'runtime speed & memory' },
+  ]
+  for (const s of stats) {
+    out.push(
+      text(s.x, 138, s.big, {
+        size: 31,
+        fill: s.big === 'same' ? C.ink : C.green,
+        weight: 'bold',
+        font: MONO,
+      }),
+    )
+    out.push(text(s.x, 158, s.sub, { size: 11, fill: C.muted }))
+  }
+
+  out.push(chip(PAD, 187, C.raw, 'raw'))
+  out.push(chip(PAD + 60, 187, C.green, 'decmpfs'))
+
+  // install size
+  out.push(
+    text(PAD, 218, 'Install size', { size: 13.5, fill: C.ink, weight: 'bold' }),
+  )
+  out.push(
+    text(PAD + 86, 218, '— MB on disk, lower is better', {
+      size: 11.5,
+      fill: C.muted,
+    }),
+  )
+  const bx = 150
+  const bw = 330
+  const sc = bw / 26
+  let grid = ''
+  for (let t = 0; t <= 25; t += 5) {
+    const gx = bx + t * sc
+    grid += `<line x1="${gx}" y1="232" x2="${gx}" y2="312" stroke="${C.grid}"/>`
+    grid += text(gx, 326, String(t), {
+      size: 9.5,
+      fill: C.faint,
+      anchor: 'middle',
+    })
+  }
+  out.push(grid)
+  out.push(text(bx + bw + 8, 326, 'MB', { size: 9.5, fill: C.faint }))
+  const sizes = [
+    { name: 'lightningcss', raw: 8.52, comp: 2.54 },
+    { name: 'rolldown', raw: 17.22, comp: 5.61 },
+    { name: 'vite (both)', raw: 25.74, comp: 8.15 },
+  ]
+  let y = 240
+  for (const d of sizes) {
+    out.push(text(PAD, y + 14, d.name, { size: 12, fill: C.ink }))
+    out.push(rect(bx, y, d.raw * sc, 18, C.raw))
+    out.push(rect(bx, y, d.comp * sc, 18, C.green))
+    out.push(
+      text(bx + d.raw * sc + 8, y + 14, `${d.raw} → ${d.comp}`, {
+        size: 11,
+        fill: C.muted,
+      }),
+    )
+    y += 26
+  }
+
+  // load time — steady state (prominent) + first load (de-emphasized).
+  out.push(
+    text(PAD, 356, 'Load time', { size: 13.5, fill: C.ink, weight: 'bold' }),
+  )
+
+  function miniRow(yRow, label, segs, scl, vbase, valText, o = {}) {
+    const { h = 14, op = 1, lf = C.ink, vf = C.muted, vs = 10.5 } = o
+    const tb = yRow + Math.round(h * 0.8) + 1
+    out.push(text(PAD, tb, label, { size: 11.5, fill: lf }))
+    let cx = vbase
+    for (const seg of segs) {
+      out.push(rect(cx, yRow, seg.ms * scl, h, seg.c, 3, op))
+      cx += seg.ms * scl
+    }
+    out.push(text(cx + 8, tb, valText, { size: vs, fill: vf }))
+  }
+
+  const vbase = 190
+  // steady state — scale 0..2 ms over 110 px.
+  out.push(
+    text(PAD, 376, 'steady state · every load after the first', {
+      size: 11,
+      fill: C.muted,
+    }),
+  )
+  const ssc = 110 / 2
+  miniRow(384, 'raw .node', [{ ms: 1.48, c: C.raw }], ssc, vbase, '1.48 ms')
+  miniRow(
+    403,
+    'decmpfs .node',
+    [{ ms: 1.8, c: C.green }],
+    ssc,
+    vbase,
+    '1.80 ms · +0.3 ms',
+  )
+
+  // first load — de-emphasized: thinner bars, washed-out fills, fainter text.
+  out.push(
+    text(PAD, 437, 'first load · cold, one-time (macOS)', {
+      size: 11,
+      fill: C.faint,
+    }),
+  )
+  const csc = 240 / 170
+  const coldOpts = { h: 8, op: 0.45, lf: C.muted, vf: C.faint, vs: 9.5 }
+  miniRow(444, 'raw .node', [{ ms: 150, c: C.raw }], csc, vbase, '~150 ms', coldOpts)
+  miniRow(
+    459,
+    'decmpfs .node',
+    [
+      { ms: 150, c: C.raw },
+      { ms: 10, c: C.orange },
+    ],
+    csc,
+    vbase,
+    '~160 ms · +10 ms',
+    coldOpts,
+  )
+
+  // bottom rule + explanation
+  out.push(rule(PAD, W - PAD, 484))
+  const ex = [
+    'Steady state adds 0.3 ms over raw: a 24-byte footer read, one stat, and the stub’s own dlopen — no decode when warm.',
+    'First load pays a one-time OS cost to validate + map a freshly-written native module (.dylib / .so / .dll), cached',
+    'per file — so every later load, even from another process, is the fast ~1.5 ms (not per-process). Same shape on every',
+    'OS; the ~150 ms is macOS code-signing, smaller elsewhere. A raw addon pays it once too; decmpfs adds ~10 ms.',
+  ]
+  let ey = 502
+  for (const line of ex) {
+    out.push(text(PAD, ey, line, { size: 9, fill: C.faint }))
+    ey += 14
+  }
+  return frame(W, H, out.join('\n'))
+}
+
+// ---- why not shrink the binary: tradeoff-v16 -------------------------------
+function tradeoff() {
+  const W = 760
+  const H = 548
+  const PAD = 36
+  const LBL = 'Rust build opt-level=z'
+  const out = []
+  out.push(
+    text(PAD, 50, 'Why not just shrink the Rust binary?', {
+      size: 22,
+      fill: C.ink,
+      weight: 'bold',
+    }),
+  )
+  out.push(
+    text(
+      PAD,
+      72,
+      'lightningcss 1.32.0  ·  darwin-arm64  ·  benchmark: transform() minifying a 1.16 MB stylesheet, best-of-3',
+      { size: 11.5, fill: C.muted },
+    ),
+  )
+  out.push(chip(PAD, 104, C.raw, 'raw (ships today)'))
+  out.push(chip(PAD + 150, 104, C.orange, LBL))
+  out.push(chip(PAD + 340, 104, C.green, '--compress'))
+
+  const bx = 205
+  const bw = 480
+  function section(title, unit, yTop, max, ticks, rows) {
+    out.push(text(PAD, yTop, title, { size: 14, fill: C.ink, weight: 'bold' }))
+    out.push(
+      text(PAD + title.length * 8.4, yTop, `— ${unit}`, {
+        size: 11.5,
+        fill: C.muted,
+      }),
+    )
+    const sc = bw / max
+    let g = ''
+    for (const t of ticks) {
+      const gx = bx + t * sc
+      g += `<line x1="${gx}" y1="${yTop + 14}" x2="${gx}" y2="${yTop + 116}" stroke="${C.grid}"/>`
+      g += text(gx, yTop + 132, String(t), {
+        size: 9.5,
+        fill: C.faint,
+        anchor: 'middle',
+      })
+    }
+    out.push(g)
+    out.push(
+      text(bx + max * sc + 6, yTop + 132, unit.split(',')[0], {
+        size: 9.5,
+        fill: C.faint,
+      }),
+    )
+    let yy = yTop + 22
+    for (const r of rows) {
+      out.push(text(PAD, yy + 15, r.label, { size: 11.5, fill: C.ink }))
+      out.push(rect(bx, yy, r.v * sc, 22, r.c))
+      out.push(
+        text(bx + r.v * sc + 8, yy + 15, r.note, { size: 11, fill: C.muted }),
+      )
+      yy += 32
+    }
+  }
+
+  section('Binary size', 'MB, lower is better', 150, 9, [0, 2, 4, 6, 8], [
+    { label: 'raw', v: 8.52, c: C.raw, note: '8.52' },
+    { label: LBL, v: 3.44, c: C.orange, note: '3.44' },
+    { label: '--compress', v: 2.54, c: C.green, note: '2.54' },
+  ])
+  section(
+    'Minify throughput',
+    'ops/sec, higher is better',
+    330,
+    65,
+    [0, 20, 40, 60],
+    [
+      { label: 'raw', v: 60, c: C.raw, note: '~60' },
+      { label: LBL, v: 19, c: C.orange, note: '~19 · ~3× slower' },
+      { label: '--compress', v: 60, c: C.green, note: '~60 · same as raw' },
+    ],
+  )
+
+  out.push(rule(PAD, W - PAD, 482))
+  out.push(
+    text(
+      PAD,
+      500,
+      'Already stripped + fat LTO, so the only Rust knob left is opt-level=z — smaller, but it makes the minifier',
+      { size: 10.5, fill: C.faint },
+    ),
+  )
+  out.push(
+    text(
+      PAD,
+      515,
+      'slower. --compress is smaller and the running binary is byte-identical at full speed.',
+      { size: 10.5, fill: C.faint },
+    ),
+  )
+  out.push(
+    text(PAD, 530, '(ops/sec is machine-dependent; the ratio holds.)', {
+      size: 10.5,
+      fill: C.faint,
+    }),
+  )
+  return frame(W, H, out.join('\n'))
+}
+
+writeFileSync(join(here, 'compress-v16.svg'), headline())
+writeFileSync(join(here, 'tradeoff-v16.svg'), tradeoff())
+console.log('wrote compress-v16.svg + tradeoff-v16.svg')
