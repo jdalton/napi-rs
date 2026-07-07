@@ -276,13 +276,13 @@ function headline() {
     ],
     [
       {
-        t: 'cache (the OS temp dir, cleared on reboot; plus the +0.3 ms above). Either way the first load has a one-time cost',
+        t: 'cache (the OS temp dir, cleared on reboot; plus the +0.3 ms above). On a compressing filesystem the first load is the same',
       },
     ],
     [
-      { t: '(~160 ms here), mostly the OS validating a brand-new file — like any ' },
+      { t: 'or faster than the raw ' },
       { t: '.node', code: 1 },
-      { t: ' on its first load.' },
+      { t: ' — the kernel reads fewer bytes — so no load penalty; only the ext4/xfs fallback decodes once.' },
     ],
   ]
   let fy = 488
