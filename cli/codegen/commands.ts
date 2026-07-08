@@ -235,6 +235,18 @@ const BUILD_OPTIONS: CommandSchema = {
       short: ['s'],
     },
     {
+      name: 'compress',
+      type: 'boolean',
+      description:
+        'Ship the addon compressed in place — the `.node` becomes a single self-loading file (stub + zstd payload, same filename, no sidecars and no JS loader). Node loads it directly: on a compressing filesystem (APFS/NTFS/btrfs) the stub rewrites itself into the FS-compressed addon (kernel decompress-on-read thereafter), else it decodes to an ephemeral cache (OS temp dir, like the Node compile cache; set NAPI_RS_NATIVE_CACHE to a path, `node_modules` (nearest), or `workspace` (monorepo root) to relocate, or `0` to skip caching); steady-state speed is unchanged.',
+    },
+    {
+      name: 'compressLevel',
+      type: 'string',
+      description:
+        'zstd level for --compress (1-22). Defaults to the sub-1s-compress sweet spot; turn it up for the smallest blob.',
+    },
+    {
       name: 'release',
       type: 'boolean',
       description: 'Build in release mode',

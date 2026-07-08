@@ -162,3 +162,18 @@ test('createEsmBinding is Node 12 compatible', (t) => {
   t.false(code.includes('?.'), 'ESM loader must not use optional chaining')
   t.false(code.includes('??'), 'ESM loader must not use nullish coalescing')
 })
+
+test('binding loads a compressed build with a plain require (the stub self-loads)', (t) => {
+  // --compress no longer changes the binding: the built .node is a self-loading
+  // stub, so the generated loader requires it directly — no inlined JS decoder.
+  const code = createCjsBinding('test', '@scope/test', ['sum'])
+  t.false(
+    code.includes('__napiLoadCompressed'),
+    'no inlined JS decompressor — the stub decodes itself',
+  )
+  t.false(code.includes('brotliDecompressSync'))
+  t.true(
+    code.includes(`require('./test.darwin-arm64.node')`),
+    'loads the .node with a plain require',
+  )
+})

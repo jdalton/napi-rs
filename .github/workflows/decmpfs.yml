@@ -1,0 +1,115 @@
+name: decmpfs
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'crates/decmpfs/**'
+      - 'crates/decmpfs-napi/**'
+      - '.github/workflows/decmpfs.yml'
+  pull_request:
+    paths:
+      - 'crates/decmpfs/**'
+      - 'crates/decmpfs-napi/**'
+      - '.github/workflows/decmpfs.yml'
+
+jobs:
+  test:
+    name: unit - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ matrix.os }}-decmpfs-${{ hashFiles('crates/decmpfs/Cargo.toml') }}
+          restore-keys: |
+            ${{ matrix.os }}-decmpfs-
+
+      # The addon ships built with panic=abort (addon-min), so a panic can't unwind
+      # to a JS error. Enforce the crate's panic-free invariant (deny unwrap/expect).
+      - name: Clippy (panic-free invariant)
+        run: cargo clippy -p decmpfs
+
+      # Each OS leg compiles its own backend (linux.rs / windows.rs / macos.rs) and
+      # runs the unit tests. The btrfs/ntfs integration tests self-skip without their
+      # env (the btrfs/ntfs jobs supply it), so they're inert here.
+      - name: Test (core + shim)
+        run: |
+          cargo test -p decmpfs
+          cargo check -p decmpfs-napi
+
+      # musl is the one C ABI the gnu/msvc/apple legs above don't cover. The crate
+      # has no target_arch-specific code, so x86_64-musl stands in for both arches;
+      # musl-tools supplies the musl-gcc that zstd-sys's C build needs.
+      - name: Check musl build
+        if: matrix.os == 'ubuntu-24.04'
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          cargo check -p decmpfs --target x86_64-unknown-linux-musl
+
+  btrfs:
+    name: btrfs runtime (real filesystem)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install btrfs-progs
+        run: sudo apt-get update && sudo apt-get install -y btrfs-progs
+
+      # Provisioning lives in one script shared with the local Docker harness
+      # (crates/decmpfs/ci/Dockerfile) so the two can't drift. It exports
+      # DECMPFS_BTRFS_DIR / DECMPFS_BTRFS_RO_DIR, so source it, then run only the
+      # btrfs integration test (the units already ran in the `test` job).
+      - name: Provision btrfs + run the btrfs test
+        run: |
+          source crates/decmpfs/ci/btrfs-loopback.sh
+          cargo test -p decmpfs --test btrfs -- --nocapture --test-threads=1
+
+  ntfs:
+    name: ntfs runtime (real filesystem)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # runner.temp is on the NTFS C: drive, which supports per-file compression.
+      - name: Test against real NTFS
+        env:
+          DECMPFS_NTFS_DIR: ${{ runner.temp }}
+        run: cargo test -p decmpfs --test ntfs -- --nocapture

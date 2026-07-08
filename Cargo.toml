@@ -3,7 +3,10 @@ resolver = "2"
 members = [
   "./crates/backend",
   "./crates/build",
+  "./crates/decmpfs",
+  "./crates/decmpfs-napi",
   "./crates/macro",
+  "./crates/napi-compress",
   "./crates/napi",
   "./crates/sys",
   "./examples/napi",
@@ -33,6 +36,18 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
 [profile.release]
 lto = true
 
+# Size-tuned profile for the decmpfs trampoline stub. NOT published — the CLI builds
+# this crate (cargo build -p decmpfs-napi --profile addon-size) and appends the stub
+# to each --compress addon's .node output. Optimize the WHOLE build (crate AND deps)
+# for size, then strip symbols. panic stays "unwind": a Rust panic must surface as a
+# JS error via napi's catch_unwind, not abort the host Node process.
+[profile.addon-size]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"
+
 [profile.wasi]
 inherits = "release"
 opt-level = "z"
@@ -41,3 +56,17 @@ debug = true
 [profile.napi-rs-custom]
 inherits = "dev"
 codegen-units = 1024
+
+# Smallest possible stub (~86 KB darwin-arm64, -80% vs release) — rebuilds std from
+# source per target with immediate-abort. Requires nightly + rust-src; the CLI builds
+# it with:
+#   CARGO_UNSTABLE_BUILD_STD=std,panic_abort
+#   CARGO_UNSTABLE_BUILD_STD_FEATURES=optimize_for_size
+#   RUSTFLAGS=-Zunstable-options -Cpanic=immediate-abort
+#   cargo build -p decmpfs-napi --profile addon-min
+# Safe ONLY because the crate is enforced panic-free (deny unwrap/expect) — under
+# abort a panic can't unwind to a JS error, it kills the host process. The trampoline
+# never throws, so a require()-level fallback stays intact.
+[profile.addon-min]
+inherits = "addon-size"
+panic = "abort"

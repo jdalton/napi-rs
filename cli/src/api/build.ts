@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { basename, parse, join, resolve } from 'node:path'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import * as colors from 'colorette'
 
@@ -47,6 +49,35 @@ import {
 const debug = debugFactory('build')
 const require = createRequire(import.meta.url)
 
+// The prebuilt self-loading stubs ship in @napi-rs/cli under `stubs/<triple>.node`
+// (one per supported target). Walk up to the package root so this resolves the
+// same way from the bundled `dist` and from a source/test run.
+function resolveStubPath(triple: string): string {
+  return path.join(packageRoot(), 'stubs', `${triple}.node`)
+}
+
+// The host `napi-compress` producer ships in @napi-rs/cli under
+// `bin/napi-compress-<hostTriple>[.exe]` (one per build OS, not per target — it
+// runs on the build machine). Resolve it the same way as the stubs.
+function resolveProducerPath(hostTriple: string): string {
+  const exe = hostTriple.includes('windows') ? '.exe' : ''
+  return path.join(packageRoot(), 'bin', `napi-compress-${hostTriple}${exe}`)
+}
+
+// The @napi-rs/cli package root, found by walking up to the nearest package.json.
+// Resolves the same from the bundled `dist` and from a source/test run.
+function packageRoot(): string {
+  let dir = path.dirname(fileURLToPath(import.meta.url))
+  while (!existsSync(path.join(dir, 'package.json'))) {
+    const up = path.dirname(dir)
+    if (up === dir) {
+      break
+    }
+    dir = up
+  }
+  return dir
+}
+
 type OutputKind = 'js' | 'dts' | 'node' | 'exe' | 'wasm'
 type Output = { kind: OutputKind; path: string }
 
@@ -77,6 +108,8 @@ export async function buildProject(rawOptions: BuildOptions) {
   }
 
   const resolvePath = (...paths: string[]) => resolve(options.cwd, ...paths)
+  const resolvePath = (...paths: string[]) =>
+    path.resolve(options.cwd, ...paths)
 
   const manifestPath = resolvePath(options.manifestPath ?? 'Cargo.toml')
   const metadata = await parseMetadata(manifestPath)
@@ -404,6 +437,13 @@ class Builder {
     this.target = resolveTarget(options.target)
     this.crateDir = parse(crate.manifest_path).dir
     this.outputDir = resolve(
+    this.target = options.target
+      ? parseTriple(options.target)
+      : process.env.CARGO_BUILD_TARGET
+        ? parseTriple(process.env.CARGO_BUILD_TARGET)
+        : getSystemDefaultTarget()
+    this.crateDir = path.parse(crate.manifest_path).dir
+    this.outputDir = path.resolve(
       this.options.cwd,
       options.outputDir ?? this.crateDir,
     )
@@ -491,6 +531,11 @@ class Builder {
       const { version, download } = require('@napi-rs/cross-toolchain')
 
       const toolchainPath = join(
+      const alias: Record<string, string> = {
+        's390x-unknown-linux-gnu': 's390x-ibm-linux-gnu',
+      }
+
+      const toolchainPath = path.join(
         homedir(),
         '.napi-rs',
         'cross-toolchain',
@@ -498,7 +543,7 @@ class Builder {
         this.target.triple,
       )
       mkdirSync(toolchainPath, { recursive: true })
-      if (existsSync(join(toolchainPath, 'package.json'))) {
+      if (existsSync(path.join(toolchainPath, 'package.json'))) {
         debug(`Toolchain ${toolchainPath} exists, skip extracting`)
       } else {
         const tarArchive = download(process.arch, this.target.triple)
@@ -508,6 +553,63 @@ class Builder {
         this.envs,
         napiCrossToolchainEnvs(toolchainPath, this.target.triple),
       )
+      const upperCaseTarget = targetToEnvVar(this.target.triple)
+      const crossTargetName = alias[this.target.triple] ?? this.target.triple
+      const linkerEnv = `CARGO_TARGET_${upperCaseTarget}_LINKER`
+      this.setEnvIfNotExists(
+        linkerEnv,
+        path.join(toolchainPath, 'bin', `${crossTargetName}-gcc`),
+      )
+      this.setEnvIfNotExists(
+        'TARGET_SYSROOT',
+        path.join(toolchainPath, crossTargetName, 'sysroot'),
+      )
+      this.setEnvIfNotExists(
+        'TARGET_AR',
+        path.join(toolchainPath, 'bin', `${crossTargetName}-ar`),
+      )
+      this.setEnvIfNotExists(
+        'TARGET_RANLIB',
+        path.join(toolchainPath, 'bin', `${crossTargetName}-ranlib`),
+      )
+      this.setEnvIfNotExists(
+        'TARGET_READELF',
+        path.join(toolchainPath, 'bin', `${crossTargetName}-readelf`),
+      )
+      this.setEnvIfNotExists(
+        'TARGET_C_INCLUDE_PATH',
+        path.join(toolchainPath, crossTargetName, 'sysroot', 'usr', 'include/'),
+      )
+      this.setEnvIfNotExists(
+        'TARGET_CC',
+        path.join(toolchainPath, 'bin', `${crossTargetName}-gcc`),
+      )
+      this.setEnvIfNotExists(
+        'TARGET_CXX',
+        path.join(toolchainPath, 'bin', `${crossTargetName}-g++`),
+      )
+      this.setEnvIfNotExists(
+        'BINDGEN_EXTRA_CLANG_ARGS',
+        `--sysroot=${this.envs.TARGET_SYSROOT}}`,
+      )
+
+      if (
+        process.env.TARGET_CC?.startsWith('clang') ||
+        (process.env.CC?.startsWith('clang') && !process.env.TARGET_CC)
+      ) {
+        const TARGET_CFLAGS = process.env.TARGET_CFLAGS ?? ''
+        this.envs.TARGET_CFLAGS = `--sysroot=${this.envs.TARGET_SYSROOT} --gcc-toolchain=${toolchainPath} ${TARGET_CFLAGS}`
+      }
+      if (
+        (process.env.CXX?.startsWith('clang++') && !process.env.TARGET_CXX) ||
+        process.env.TARGET_CXX?.startsWith('clang++')
+      ) {
+        const TARGET_CXXFLAGS = process.env.TARGET_CXXFLAGS ?? ''
+        this.envs.TARGET_CXXFLAGS = `--sysroot=${this.envs.TARGET_SYSROOT} --gcc-toolchain=${toolchainPath} ${TARGET_CXXFLAGS}`
+      }
+      this.envs.PATH = this.envs.PATH
+        ? `${toolchainPath}/bin:${this.envs.PATH}:${process.env.PATH}`
+        : `${toolchainPath}/bin:${process.env.PATH}`
     } catch (e) {
       throw new Error(
         `Failed to set up the \`--use-napi-cross\` toolchain for ${this.target.triple}: ${(e as Error).message}. Check filesystem permissions and network connectivity to the npm registry, then retry, or use \`--cross-compile\` (\`-x\`) / \`--use-cross\` instead.`,
@@ -730,7 +832,7 @@ class Builder {
     this.metadata.packages.forEach((crate) => {
       if (
         crate.dependencies.some((d) => d.name === 'napi-derive') &&
-        !existsSync(join(typeDefTmpFolder, crate.name))
+        !existsSync(path.join(typeDefTmpFolder, crate.name))
       ) {
         this.envs[
           `NAPI_FORCE_BUILD_${crate.name.replace(/-/g, '_').toUpperCase()}`
@@ -776,7 +878,7 @@ class Builder {
   }
 
   private setWasiEnv() {
-    const emnapi = join(
+    const emnapi = path.join(
       require.resolve('emnapi'),
       '..',
       'lib',
@@ -784,7 +886,9 @@ class Builder {
     )
     this.envs.EMNAPI_LINK_DIR = emnapi
     const emnapiVersion = require('emnapi/package.json').version
-    const projectRequire = createRequire(join(this.options.cwd, 'package.json'))
+    const projectRequire = createRequire(
+      path.join(this.options.cwd, 'package.json'),
+    )
     const emnapiCoreVersion = projectRequire('@emnapi/core').version
     const emnapiRuntimeVersion = projectRequire('@emnapi/runtime').version
 
@@ -799,35 +903,38 @@ class Builder {
     const { WASI_SDK_PATH } = process.env
 
     if (WASI_SDK_PATH && existsSync(WASI_SDK_PATH)) {
-      this.envs.CARGO_TARGET_WASM32_WASI_PREVIEW1_THREADS_LINKER = join(
+      this.envs.CARGO_TARGET_WASM32_WASI_PREVIEW1_THREADS_LINKER = path.join(
         WASI_SDK_PATH,
         'bin',
         'wasm-ld',
       )
-      this.envs.CARGO_TARGET_WASM32_WASIP1_LINKER = join(
+      this.envs.CARGO_TARGET_WASM32_WASIP1_LINKER = path.join(
         WASI_SDK_PATH,
         'bin',
         'wasm-ld',
       )
-      this.envs.CARGO_TARGET_WASM32_WASIP1_THREADS_LINKER = join(
+      this.envs.CARGO_TARGET_WASM32_WASIP1_THREADS_LINKER = path.join(
         WASI_SDK_PATH,
         'bin',
         'wasm-ld',
       )
-      this.envs.CARGO_TARGET_WASM32_WASIP2_LINKER = join(
+      this.envs.CARGO_TARGET_WASM32_WASIP2_LINKER = path.join(
         WASI_SDK_PATH,
         'bin',
         'wasm-ld',
       )
-      this.setEnvIfNotExists('TARGET_CC', join(WASI_SDK_PATH, 'bin', 'clang'))
+      this.setEnvIfNotExists(
+        'TARGET_CC',
+        path.join(WASI_SDK_PATH, 'bin', 'clang'),
+      )
       this.setEnvIfNotExists(
         'TARGET_CXX',
-        join(WASI_SDK_PATH, 'bin', 'clang++'),
+        path.join(WASI_SDK_PATH, 'bin', 'clang++'),
       )
-      this.setEnvIfNotExists('TARGET_AR', join(WASI_SDK_PATH, 'bin', 'ar'))
+      this.setEnvIfNotExists('TARGET_AR', path.join(WASI_SDK_PATH, 'bin', 'ar'))
       this.setEnvIfNotExists(
         'TARGET_RANLIB',
-        join(WASI_SDK_PATH, 'bin', 'ranlib'),
+        path.join(WASI_SDK_PATH, 'bin', 'ranlib'),
       )
       this.setEnvIfNotExists(
         'TARGET_CFLAGS',
@@ -936,7 +1043,7 @@ class Builder {
   }
 
   private generateIntermediateTypeDefFolder() {
-    let folder = join(
+    let folder = path.join(
       this.targetDir,
       'napi-rs',
       `${this.crate.name}-${createHash('sha256')
@@ -997,9 +1104,9 @@ class Builder {
 
     const profile =
       this.options.profile ?? (this.options.release ? 'release' : 'debug')
-    const src = join(this.targetDir, this.target.triple, profile, srcName)
+    const src = path.join(this.targetDir, this.target.triple, profile, srcName)
     debug(`Copy artifact from: [${src}]`)
-    const dest = join(this.outputDir, destName)
+    const dest = path.join(this.outputDir, destName)
     const isWasm = dest.endsWith('.wasm')
 
     try {
@@ -1045,11 +1152,39 @@ class Builder {
       } else {
         await copyFileAsync(src, dest)
       }
+      let artifactPath = dest
+      // Flag trumps config: a passed --compress/--no-compress wins, otherwise the
+      // `napi.compress` config value (or the built-in default) applies. Same for
+      // codec and level. No env var — build output stays deterministic.
+      const compress = this.options.compress ?? this.config.compress
+      if (compress && dest.endsWith('.node')) {
+        const { compressNodeArtifact } = await import('./compress.js')
+        const level =
+          this.options.compressLevel !== undefined
+            ? Number(this.options.compressLevel)
+            : this.config.compressLevel
+        const {
+          path: compressedPath,
+          rawSize,
+          totalSize,
+        } = await compressNodeArtifact(dest, {
+          level,
+          napiCompressPath: resolveProducerPath(getSystemDefaultTarget().triple),
+          stubPath: resolveStubPath(this.target.triple),
+        })
+        artifactPath = compressedPath
+        debug(
+          'Compressed artifact (zstd) in place: [%i] (%i -> %i bytes)',
+          compressedPath,
+          rawSize,
+          totalSize,
+        )
+      }
       this.outputs.push({
         kind: dest.endsWith('.node') ? 'node' : isWasm ? 'wasm' : 'exe',
-        path: dest,
+        path: artifactPath,
       })
-      return wasmBinaryName ? join(this.outputDir, wasmBinaryName) : null
+      return wasmBinaryName ? path.join(this.outputDir, wasmBinaryName) : null
     } catch (e) {
       throw new Error('Failed to copy artifact', { cause: e })
     }
@@ -1117,7 +1252,7 @@ class Builder {
       cwd: this.options.cwd,
     })
 
-    const dest = join(this.outputDir, this.options.dts ?? 'index.d.ts')
+    const dest = path.join(this.outputDir, this.options.dts ?? 'index.d.ts')
 
     try {
       debug('Writing type def to:')
@@ -1129,7 +1264,7 @@ class Builder {
     }
 
     if (exports.length > 0) {
-      const dest = join(this.outputDir, this.options.dts ?? 'index.d.ts')
+      const dest = path.join(this.outputDir, this.options.dts ?? 'index.d.ts')
       this.outputs.push({ kind: 'dts', path: dest })
     }
 
@@ -1147,6 +1282,7 @@ class Builder {
       packageName: this.options.jsPackageName ?? this.config.packageName,
       version: process.env.npm_new_version ?? this.config.packageJson.version,
       outputDir: this.outputDir,
+      compress: this.options.compress,
     })
   }
 
@@ -1155,15 +1291,15 @@ class Builder {
     idents: string[],
   ) {
     if (distFileName) {
-      const { name, dir } = parse(distFileName)
-      const bindingPath = join(dir, `${this.config.binaryName}.wasi.cjs`)
-      const browserBindingPath = join(
+      const { name, dir } = path.parse(distFileName)
+      const bindingPath = path.join(dir, `${this.config.binaryName}.wasi.cjs`)
+      const browserBindingPath = path.join(
         dir,
         `${this.config.binaryName}.wasi-browser.js`,
       )
-      const workerPath = join(dir, 'wasi-worker.mjs')
-      const browserWorkerPath = join(dir, 'wasi-worker-browser.mjs')
-      const browserEntryPath = join(dir, 'browser.js')
+      const workerPath = path.join(dir, 'wasi-worker.mjs')
+      const browserWorkerPath = path.join(dir, 'wasi-worker-browser.mjs')
+      const browserEntryPath = path.join(dir, 'browser.js')
       const exportsCode =
         `module.exports = __napiModule.exports\n` +
         idents
@@ -1246,6 +1382,7 @@ export interface WriteJsBindingOptions {
   packageName: string
   version: string
   outputDir: string
+  compress?: boolean
 }
 
 export async function writeJsBinding(
@@ -1272,7 +1409,7 @@ export async function writeJsBinding(
   )
 
   try {
-    const dest = join(options.outputDir, name)
+    const dest = path.join(options.outputDir, name)
     debug('Writing js binding to:')
     debug('  %i', dest)
     await writeFileAsync(dest, binding, 'utf-8')
@@ -1317,7 +1454,7 @@ export async function generateTypeDef(
     if (options.configDtsHeaderFile) {
       try {
         header = await readFileAsync(
-          join(options.cwd, options.configDtsHeaderFile),
+          path.join(options.cwd, options.configDtsHeaderFile),
           'utf-8',
         )
       } catch (e) {
@@ -1355,7 +1492,7 @@ export async function generateTypeDef(
   const processedTypeDefs = await Promise.all(
     typeDefFiles.map((file) =>
       processTypeDef(
-        join(options.typeDefDir, file.name),
+        path.join(options.typeDefDir, file.name),
         constEnum,
         runtimeStringEnum,
       ),

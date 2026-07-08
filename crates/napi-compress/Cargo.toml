@@ -1,0 +1,33 @@
+[package]
+name = "napi-compress"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Host build-time producer: compress a built .node and inject + ad-hoc-sign a signable SMOL/__DECMPFS section the self-loading stub reads."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "napi-compress"
+path = "src/main.rs"
+
+# The producer is a HOST build-time tool, NOT the shipped stub — so the heavy
+# deps live here and never reach decmpfs / decmpfs-napi (which stay dep-lean and
+# panic=abort). It shares ONLY the section ABI (`build_section_payload`) and the
+# cache key (`fnv1a64`) with decmpfs, so the wire format has one source of truth.
+[dependencies]
+decmpfs = { path = "../decmpfs" }
+zstd = "0.13"
+
+# apple-codesign re-signs the injected Mach-O ad-hoc so the section stays covered
+# by the code signature (codesign -v clean + notarizable). macOS-only: it's the
+# only target whose loader enforces a code signature on dlopen.
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-codesign = "0.29"
+
+# The round-trip integration test (a separate crate that drives the built binary)
+# uses the section ABI hash + the zstd decoder to verify the oracle directly.
+[dev-dependencies]
+decmpfs = { path = "../decmpfs" }
+zstd = "0.13"

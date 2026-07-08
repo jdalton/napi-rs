@@ -169,3 +169,7 @@ bench.txt
 !.yarn/versions
 .vscode/
 .claude/
+# Prebuilt self-loading stubs — produced by cli/build-stubs.mjs (CI), shipped via package.json "files".
+cli/stubs/*.node
+# Host build-time producer — built by cli/build-producer.mjs (one per host OS), shipped via package.json "files".
+cli/bin/napi-compress-*

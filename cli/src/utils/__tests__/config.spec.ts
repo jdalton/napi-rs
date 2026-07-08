@@ -79,3 +79,28 @@ test('should be able to read config from napi.json', async (t) => {
   const config = await readNapiConfig(packageJson, configPath)
   t.snapshot(config)
 })
+
+test('reads napi.compress defaults from package.json', async (t) => {
+  const pkgJsonPath = join(tmpdir(), 'napi-compress-config.json')
+  await writeFile(
+    pkgJsonPath,
+    JSON.stringify({
+      name: 'demo',
+      napi: { compress: true, compressLevel: 11 },
+    }),
+  )
+  t.teardown(() => unlink(pkgJsonPath))
+
+  const config = await readNapiConfig(pkgJsonPath)
+  t.is(config.compress, true)
+  t.is(config.compressLevel, 11)
+})
+
+test('leaves napi.compress undefined when not configured', async (t) => {
+  const pkgJsonPath = join(tmpdir(), 'napi-no-compress-config.json')
+  await writeFile(pkgJsonPath, JSON.stringify({ name: 'demo' }))
+  t.teardown(() => unlink(pkgJsonPath))
+
+  const config = await readNapiConfig(pkgJsonPath)
+  t.is(config.compress, undefined)
+})

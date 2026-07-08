@@ -4,6 +4,7 @@ import {
   unlink,
   copyFile,
   mkdir,
+  rename,
   stat,
   readdir,
   access,
@@ -17,6 +18,7 @@ export const writeFileAsync = writeFile
 export const unlinkAsync = unlink
 export const copyFileAsync = copyFile
 export const mkdirAsync = mkdir
+export const renameAsync = rename
 export const statAsync = stat
 export const readdirAsync = readdir
 

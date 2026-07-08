@@ -98,6 +98,16 @@ export abstract class BaseBuildCommand extends Command {
     description: 'Whether strip the library to achieve the minimum file size',
   })
 
+  compress?: boolean = Option.Boolean('--compress', {
+    description:
+      'Ship the addon compressed in place — the `.node` becomes a single self-loading file (stub + zstd payload, same filename, no sidecars and no JS loader). Node loads it directly: on a compressing filesystem (APFS/NTFS/btrfs) the stub rewrites itself into the FS-compressed addon (kernel decompress-on-read thereafter), else it decodes to an ephemeral cache (OS temp dir, like the Node compile cache; set NAPI_RS_NATIVE_CACHE to a path, `node_modules` (nearest), or `workspace` (monorepo root) to relocate, or `0` to skip caching); steady-state speed is unchanged.',
+  })
+
+  compressLevel?: string = Option.String('--compress-level', {
+    description:
+      'zstd level for --compress (1-22). Defaults to the sub-1s-compress sweet spot; turn it up for the smallest blob.',
+  })
+
   release?: boolean = Option.Boolean('--release,-r', {
     description: 'Build in release mode',
   })
@@ -171,6 +181,8 @@ export abstract class BaseBuildCommand extends Command {
       dtsCache: this.dtsCache,
       esm: this.esm,
       strip: this.strip,
+      compress: this.compress,
+      compressLevel: this.compressLevel,
       release: this.release,
       verbose: this.verbose,
       bin: this.bin,
@@ -269,6 +281,14 @@ export interface BuildOptions {
    * Whether strip the library to achieve the minimum file size
    */
   strip?: boolean
+  /**
+   * Ship the addon compressed in place — the `.node` becomes a single self-loading file (stub + zstd payload, same filename, no sidecars and no JS loader). Node loads it directly: on a compressing filesystem (APFS/NTFS/btrfs) the stub rewrites itself into the FS-compressed addon (kernel decompress-on-read thereafter), else it decodes to an ephemeral cache (OS temp dir, like the Node compile cache; set NAPI_RS_NATIVE_CACHE to a path, `node_modules` (nearest), or `workspace` (monorepo root) to relocate, or `0` to skip caching); steady-state speed is unchanged.
+   */
+  compress?: boolean
+  /**
+   * zstd level for --compress (1-22). Defaults to the sub-1s-compress sweet spot; turn it up for the smallest blob.
+   */
+  compressLevel?: string
   /**
    * Build in release mode
    */

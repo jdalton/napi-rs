@@ -1,0 +1,33 @@
+[package]
+name = "decmpfs"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Apply OS-level transparent filesystem compression to a single .node in place (napi-free core)."
+
+[lints]
+workspace = true
+
+# zstd-only. The `zstd` crate binds libzstd (statically built from source via
+# zstd-sys/cc), which decodes ~25-30x faster than a pure-Rust decoder — the cost
+# paid on the one-time cold first-load. zstd is a good size/speed mix and the
+# producer emits only zstd, so there's no second codec to carry.
+#
+# default-features off drops what a decode-only stub never uses: `legacy`
+# (pre-1.0 zstd frame formats — we control the encoder, it's modern) and
+# `zdict_builder` (dictionary trainer). Smaller libzstd, smaller stub.
+[dependencies]
+zstd = { version = "0.13", default-features = false }
+
+# Backend syscalls, cfg-gated so non-target builds stay dep-free. Linux (btrfs
+# ioctls) and macOS (statfs/xattr/chflags + libcompression) both use libc.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+] }

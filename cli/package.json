@@ -24,8 +24,10 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "bin",
     "dist",
     "src",
+    "stubs",
     "!__tests__"
   ],
   "keywords": [

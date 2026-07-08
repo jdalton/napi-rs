@@ -1,0 +1,110 @@
+name: build-stubs
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+# Builds the self-loading stub (crates/decmpfs-napi) for every supported target via
+# cli/build-stubs.mjs and uploads them as artifacts. These are the prebuilt stubs the
+# CLI ships in cli/stubs/<triple>.node; the release flow downloads them before publish.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'crates/decmpfs/**'
+      - 'crates/decmpfs-napi/**'
+      - 'cli/build-stubs.mjs'
+      - '.github/workflows/build-stubs.yml'
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # zig cross-builds apple + every linux libc from one Linux host (it bundles
+          # the C cross-compiler libzstd needs); the macOS SDK is fetched for apple.
+          - name: apple + linux (zigbuild)
+            os: ubuntu-latest
+            zigbuild: true
+            targets: >-
+              aarch64-apple-darwin x86_64-apple-darwin
+              aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu
+              aarch64-unknown-linux-musl x86_64-unknown-linux-musl
+          # windows-msvc needs the native MSVC toolchain (zig targets gnu, not msvc).
+          - name: windows-msvc
+            os: windows-latest
+            zigbuild: false
+            targets: x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install ziglang
+        if: matrix.zigbuild
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild
+        if: matrix.zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Install macOS SDK
+        if: matrix.zigbuild
+        run: curl -L "https://github.com/phracker/MacOSX-SDKs/releases/download/11.3/MacOSX11.3.sdk.tar.xz" | tar -J -x -C /opt
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: stubs-${{ matrix.os }}-${{ hashFiles('crates/decmpfs/Cargo.toml') }}
+          restore-keys: |
+            stubs-${{ matrix.os }}-
+
+      # Stable build = the portable ~350 KB stub. For the ~135 KB shipped stub, set
+      # BUILD_STD=1 here on the pinned nightly (needs rust-src) — see build-stubs.mjs.
+      - name: Build stubs
+        shell: bash
+        env:
+          ZIGBUILD: ${{ matrix.zigbuild && '1' || '' }}
+          SDKROOT: /opt/MacOSX11.3.sdk
+          # musl is static-only by default, so it can't produce a cdylib; disabling
+          # crt-static lets it build a dynamic lib (no-op for gnu/apple).
+          RUSTFLAGS: ${{ matrix.zigbuild && '-C target-feature=-crt-static' || '' }}
+        run: |
+          set -euo pipefail
+          for target in ${{ matrix.targets }}; do
+            echo "::group::$target"
+            rustup target add "$target"
+            node cli/build-stubs.mjs "$target"
+            echo "::endgroup::"
+          done
+          ls -la cli/stubs
+
+      - name: Upload stubs
+        uses: actions/upload-artifact@v7
+        with:
+          name: stubs-${{ matrix.os }}
+          path: cli/stubs/*.node
+          if-no-files-found: error
